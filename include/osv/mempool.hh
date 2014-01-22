@@ -178,6 +178,8 @@ namespace stats {
     void on_jvm_heap_alloc(size_t mem);
     void on_jvm_heap_free(size_t mem);
 }
+
+extern void *zero_page[2];
 }
 
 #endif

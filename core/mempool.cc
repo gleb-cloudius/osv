@@ -987,10 +987,15 @@ void free_initial_memory_range(void* addr, size_t size)
     free_page_range(addr, size);
 
 }
+void *zero_page[2];
 
 void  __attribute__((constructor(init_prio::mempool))) setup()
 {
     arch_setup_free_memory();
+    zero_page[0] = alloc_page();
+    zero_page[1] = alloc_huge_page(mmu::huge_page_size);
+    memset(zero_page[0], 0, mmu::page_size);
+    memset(zero_page[1], 0, mmu::huge_page_size);
 }
 
 void debug_memory_pool(size_t *total, size_t *contig)

@@ -452,40 +452,83 @@ template <account_opt T = account_opt::no>
 class populate : public vma_operation<allocate_intermediate_opt::yes, skip_empty_opt::no, T> {
 private:
     fill_page *fill;
+    bool _write;
     unsigned int perm;
-public:
-    populate(fill_page *fill, unsigned int perm) : fill(fill), perm(perm) { }
+    bool _do_flush = false;
+    bool skip(pt_element pte) {
+        if (pte.empty()) {
+            return false;
+        }
+        return !_write || pte.writable();
+    }
+    phys alloc_small(uintptr_t offset) {
+        if (!_write) {
+            return virt_to_phys(memory::zero_page[0]);
+        }
+        void *page = memory::alloc_page();
+        fill->fill(page, offset, page_size);
+        this->account(page_size);
+        return virt_to_phys(page);
+    }
+    void free_small(phys page) {
+        if (_write) {
+            memory::free_page(phys_to_virt(page));
+            this->account(-page_size);
+        }
+    }
+    phys alloc_huge(uintptr_t offset) {
+        if (!_write) {
+            return virt_to_phys(memory::zero_page[1]);
+        }
+        void *page = memory::alloc_huge_page(huge_page_size);
+        if (!page) {
+            throw make_error(ENOMEM);
+        }
+        fill->fill(page, offset, huge_page_size);
+        this->account(huge_page_size);
+        return virt_to_phys(page);
+    }
+    void free_huge(phys page) {
+        if (_write) {
+            memory::free_huge_page(phys_to_virt(page), huge_page_size);
+            this->account(-huge_page_size);
+        }
+    }
+ public:
+    populate(fill_page *fill, unsigned int perm, bool write) :
+        fill(fill), _write(write), perm(write ? perm : perm &= ~perm_write)  { }
     void small_page(hw_ptep ptep, uintptr_t offset){
-        if (!ptep.read().empty()) {
+        pt_element pte = ptep.read();
+        if (skip(pte)) {
             return;
         }
-        phys page = virt_to_phys(memory::alloc_page());
-        fill->fill(phys_to_virt(page), offset, page_size);
-        if (!ptep.compare_exchange(make_empty_pte(), make_normal_pte(page, perm))) {
-            memory::free_page(phys_to_virt(page));
+        phys page = alloc_small(offset);
+        if (!ptep.compare_exchange(pte, make_normal_pte(page, perm))) {
+                free_small(page);
         } else {
-            this->account(mmu::page_size);
+            _do_flush |= !pte.empty();
         }
     }
     bool huge_page(hw_ptep ptep, uintptr_t offset){
-        auto pte = ptep.read();
-        if (!pte.empty()) {
+        pt_element pte = ptep.read();
+        if (skip(pte)) {
             return true;
         }
-        void *vpage = memory::alloc_huge_page(huge_page_size);
-        if (!vpage) {
+        phys page;
+        try {
+            page = alloc_huge(offset);
+        } catch(error& err) {
             return false;
         }
 
-        phys page = virt_to_phys(vpage);
-        fill->fill(vpage, offset, huge_page_size);
-        if (!ptep.compare_exchange(make_empty_pte(), make_large_pte(page, perm))) {
-            memory::free_huge_page(phys_to_virt(page), huge_page_size);
+        if (!ptep.compare_exchange(pte, make_large_pte(page, perm))) {
+            free_huge(page);
         } else {
-            this->account(mmu::huge_page_size);
+            _do_flush |= !pte.empty();
         }
         return true;
     }
+    bool tlb_flush_needed(void) {return _do_flush;}
 };
 
 /*
@@ -504,15 +547,18 @@ public:
         // not-present may only mean mprotect(PROT_NONE).
         pt_element pte = ptep.read();
         ptep.write(make_empty_pte());
-        small_pages.push(phys_to_virt(pte.addr(false)));
-        this->account(mmu::page_size);
+        if (phys_to_virt(pte.addr(false)) != memory::zero_page[0]) {
+            small_pages.push(phys_to_virt(pte.addr(false)));
+            this->account(mmu::page_size);
+        }
     }
     bool huge_page(hw_ptep ptep, uintptr_t offset) {
         pt_element pte = ptep.read();
         ptep.write(make_empty_pte());
-        huge_pages.push(phys_to_virt(pte.addr(true)));
-
-        this->account(mmu::huge_page_size);
+        if (phys_to_virt(pte.addr(true)) != memory::zero_page[1]) {
+            huge_pages.push(phys_to_virt(pte.addr(true)));
+            this->account(mmu::huge_page_size);
+        }
         return true;
     }
     void intermediate_page(hw_ptep ptep, uintptr_t offset) {
@@ -804,7 +850,7 @@ void vpopulate(void* addr, size_t size)
 {
     fill_anon_page fill;
     WITH_LOCK(vma_list_mutex) {
-        operate_range(populate<>(&fill, perm_rwx), addr, size);
+        operate_range(populate<>(&fill, perm_rwx, true), addr, size);
     }
 }
 
@@ -826,10 +872,10 @@ void* map_anon(void* addr, size_t size, unsigned flags, unsigned perm)
     if (flags & mmap_populate) {
         if (flags & mmap_uninitialized) {
             fill_anon_page_noinit zfill;
-            operate_range(populate<>(&zfill, perm), v, size);
+            operate_range(populate<>(&zfill, perm, true), v, size);
         } else {
             fill_anon_page zfill;
-            operate_range(populate<>(&zfill, perm), v, size);
+            operate_range(populate<>(&zfill, perm, true), v, size);
         }
     }
     return v;
@@ -847,7 +893,7 @@ void* map_file(void* addr, size_t size, unsigned flags, unsigned perm,
     void *v;
     WITH_LOCK(vma_list_mutex) {
         v = (void*) allocate(vma, start, asize, search);
-        operate_range(populate<>(&fill, perm), v, asize);
+        operate_range(populate<>(&fill, perm, true), v, asize);
     }
     fill.finalize(f.get());
     return v;
@@ -1036,12 +1082,13 @@ void anon_vma::fault(uintptr_t addr, exception_frame *ef)
     }
 
     auto total = 0;
+    auto write = ef->error_code & page_fault_write;
     if (_flags & mmap_uninitialized) {
         fill_anon_page_noinit zfill;
-        total = operate_range(populate<account_opt::yes>(&zfill, _perm), (void*)addr, size);
+        total = operate_range(populate<account_opt::yes>(&zfill, _perm, write), (void*)addr, size);
     } else {
         fill_anon_page zfill;
-        total = operate_range(populate<account_opt::yes>(&zfill, _perm), (void*)addr, size);
+        total = operate_range(populate<account_opt::yes>(&zfill, _perm, write), (void*)addr, size);
     }
 
     if (_flags & mmap_jvm_heap) {
