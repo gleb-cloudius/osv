@@ -325,6 +325,7 @@ tests += tests/misc-malloc.so
 tests += tests/misc-memcpy.so
 tests += tests/misc-free-perf.so
 tests += tests/tst-fallocate.so
+tests += tests/misc-arc-eviction.so
 endif
 
 tests/hello/Hello.class: javabase=tests/hello
