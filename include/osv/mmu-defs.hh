@@ -11,6 +11,10 @@
 #include <stdint.h>
 #include <atomic>
 #include <osv/rcu.hh>
+#include <boost/mpl/if.hpp>
+#include <boost/mpl/less_equal.hpp>
+#include <boost/static_assert.hpp>
+
 
 struct exception_frame;
 
@@ -68,6 +72,8 @@ void flush_tlb_all();
 
     /* static class arch_pt_element; */
 
+template<int N> class hw_ptep;
+
 /* common arch-independent interface for pt_element */
 class pt_element {
 public:
@@ -106,7 +112,11 @@ private:
         x |= u64(v) << nr;
     }
     u64 x;
-    friend class hw_ptep;
+    friend class hw_ptep<0>;
+    friend class hw_ptep<1>;
+    friend class hw_ptep<2>;
+    friend class hw_ptep<3>;
+    friend class hw_ptep<4>;
     friend class arch_pt_element;
 };
 
@@ -130,16 +140,50 @@ bool fast_sigsegv_check(uintptr_t addr, exception_frame* ef);
 
 /* a pointer to a pte mapped by hardware.
    The arch must implement change_perm for this class. */
+template <int N>
 class hw_ptep {
-    typedef osv::rcu_ptr<pt_element> pt_ptr;
+    BOOST_STATIC_ASSERT(N >= -1 && N <= 4);
+    typedef typename boost::mpl::if_<
+            std::integral_constant<bool, N <= 1>,
+            osv::rcu_ptr<pt_element>,
+            pt_element*
+            >::type pt_ptr;
+
+    pt_element* get(pt_element* e) const {
+        return e;
+    }
+    pt_element* get(const osv::rcu_ptr<pt_element>& e) const {
+        return e.read_by_owner();
+    }
+    pt_element* get_rcu(pt_element* e) const {
+        return e;
+    }
+    pt_element* get_rcu(const osv::rcu_ptr<pt_element>& e) const {
+        return e.read();
+    }
+    void assign(pt_element* a, pt_element* b) {
+        p = b;
+    }
+    void assign(osv::rcu_ptr<pt_element>& a, pt_element* b) {
+        p.assign(b);
+    }
+    void write(pt_element* a, pt_element pte) {
+        *const_cast<volatile u64*>(&p->x) = pte.x;
+    }
+    void write(osv::rcu_ptr<pt_element>& a, pt_element pte) {
+        reinterpret_cast<pt_ptr*>(release())->assign(reinterpret_cast<pt_element*>(pte.x));
+    }
+
 public:
-    hw_ptep(const hw_ptep& a) : p(a.release()) {}
-    void operator=(const hw_ptep& a) {
-        p.assign(a.release());
+    hw_ptep(const hw_ptep<N>& a) : p(a.release()) {}
+    void operator=(const hw_ptep<N>& a) {
+        assign(p, a.release());
     }
     pt_element read() const { return *release(); }
-    pt_element ll_read() const { return *p.read(); }
-    void write(pt_element pte) { reinterpret_cast<pt_ptr*>(release())->assign(reinterpret_cast<pt_element*>(pte.x)); }
+    pt_element ll_read() const { return *get_rcu(p); }
+    void write(pt_element pte) {
+        write(p, pte);
+    }
 
     pt_element exchange(pt_element newval) {
         std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&release()->x);
@@ -149,11 +193,11 @@ public:
         std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&release()->x);
         return x->compare_exchange_strong(oldval.x, newval.x, std::memory_order_relaxed);
     }
-    hw_ptep at(unsigned idx) { return hw_ptep(release() + idx); }
-    static hw_ptep force(pt_element* ptep) { return hw_ptep(ptep); }
+    hw_ptep<N> at(unsigned idx) { return hw_ptep<N>(release() + idx); }
+    static hw_ptep<N> force(pt_element* ptep) { return hw_ptep<N>(ptep); }
     // no longer using this as a page table
-    pt_element* release() const { return p.read_by_owner(); }
-    bool operator==(const hw_ptep& a) const noexcept { return release() == a.release(); }
+    pt_element* release() const { return get(p); }
+    bool operator==(const hw_ptep<N>& a) const noexcept { return release() == a.release(); }
 private:
     hw_ptep(pt_element* ptep) : p(ptep) {}
     pt_ptr p;
