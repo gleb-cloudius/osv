@@ -117,6 +117,8 @@ private:
     friend class hw_ptep<2>;
     friend class hw_ptep<3>;
     friend class hw_ptep<4>;
+    friend class hw_ptep_rcu_impl;
+    friend class hw_ptep_impl;
     friend class arch_pt_element;
 };
 
@@ -138,53 +140,51 @@ bool is_page_fault_write_exclusive(unsigned int err);
 
 bool fast_sigsegv_check(uintptr_t addr, exception_frame* ef);
 
+class hw_ptep_impl {
+public:
+    void operator=(const hw_ptep_impl& a) {
+        p = a.release();
+    }
+    pt_element ll_read() const { return *p; }
+    void write(pt_element pte) {
+        *const_cast<volatile u64*>(&p->x) = pte.x;
+    }
+    pt_element* release() const { return p; }
+protected:
+    hw_ptep_impl(pt_element *ptep) : p(ptep) {}
+    pt_element* p;
+};
+
+
+class hw_ptep_rcu_impl {
+public:
+    void operator=(const hw_ptep_rcu_impl& a) {
+        p.assign(a.release());
+    }
+    pt_element ll_read() const { return *p.read(); }
+    void write(pt_element pte) {
+        reinterpret_cast<osv::rcu_ptr<pt_element>*>(release())->assign(reinterpret_cast<pt_element*>(pte.x));
+    }
+    pt_element* release() const { return p.read_by_owner(); }
+protected:
+    hw_ptep_rcu_impl(pt_element *ptep) : p(ptep) {}
+    osv::rcu_ptr<pt_element> p;
+};
+
+template<int N>
+using hw_ptep_base = typename boost::mpl::if_<
+                std::integral_constant<bool, (N == 1) || (N == 2)>,
+                hw_ptep_rcu_impl,
+                hw_ptep_impl>::type;
+
 /* a pointer to a pte mapped by hardware.
    The arch must implement change_perm for this class. */
 template <int N>
-class hw_ptep {
+class hw_ptep : public hw_ptep_base<N> {
     BOOST_STATIC_ASSERT(N >= -1 && N <= 4);
-    typedef typename boost::mpl::if_<
-            std::integral_constant<bool, N <= 1>,
-            osv::rcu_ptr<pt_element>,
-            pt_element*
-            >::type pt_ptr;
-
-    pt_element* get(pt_element* e) const {
-        return e;
-    }
-    pt_element* get(const osv::rcu_ptr<pt_element>& e) const {
-        return e.read_by_owner();
-    }
-    pt_element* get_rcu(pt_element* e) const {
-        return e;
-    }
-    pt_element* get_rcu(const osv::rcu_ptr<pt_element>& e) const {
-        return e.read();
-    }
-    void assign(pt_element* a, pt_element* b) {
-        p = b;
-    }
-    void assign(osv::rcu_ptr<pt_element>& a, pt_element* b) {
-        p.assign(b);
-    }
-    void write(pt_element* a, pt_element pte) {
-        *const_cast<volatile u64*>(&p->x) = pte.x;
-    }
-    void write(osv::rcu_ptr<pt_element>& a, pt_element pte) {
-        reinterpret_cast<pt_ptr*>(release())->assign(reinterpret_cast<pt_element*>(pte.x));
-    }
-
 public:
-    hw_ptep(const hw_ptep<N>& a) : p(a.release()) {}
-    void operator=(const hw_ptep<N>& a) {
-        assign(p, a.release());
-    }
+    hw_ptep(const hw_ptep<N>& a) : hw_ptep_base<N>(a.release()) {}
     pt_element read() const { return *release(); }
-    pt_element ll_read() const { return *get_rcu(p); }
-    void write(pt_element pte) {
-        write(p, pte);
-    }
-
     pt_element exchange(pt_element newval) {
         std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&release()->x);
         return pt_element(x->exchange(newval.x));
@@ -195,12 +195,10 @@ public:
     }
     hw_ptep<N> at(unsigned idx) { return hw_ptep<N>(release() + idx); }
     static hw_ptep<N> force(pt_element* ptep) { return hw_ptep<N>(ptep); }
-    // no longer using this as a page table
-    pt_element* release() const { return get(p); }
+    using hw_ptep_base<N>::release;
     bool operator==(const hw_ptep<N>& a) const noexcept { return release() == a.release(); }
 private:
-    hw_ptep(pt_element* ptep) : p(ptep) {}
-    pt_ptr p;
+    hw_ptep(pt_element* ptep) : hw_ptep_base<N>(ptep) {}
 };
 
 }
