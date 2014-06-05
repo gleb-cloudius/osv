@@ -12,7 +12,6 @@
 #include <atomic>
 #include <osv/rcu.hh>
 #include <boost/mpl/if.hpp>
-#include <boost/mpl/less_equal.hpp>
 #include <boost/static_assert.hpp>
 
 
@@ -140,40 +139,48 @@ bool is_page_fault_write_exclusive(unsigned int err);
 
 bool fast_sigsegv_check(uintptr_t addr, exception_frame* ef);
 
-class hw_ptep_impl {
+class hw_ptep_impl_base {
+protected:
+    hw_ptep_impl_base(pt_element *ptep) : p(ptep) {}
+    pt_element *p;
+};
+
+class hw_ptep_impl : public hw_ptep_impl_base {
 public:
-    void operator=(const hw_ptep_impl& a) {
-        p = a.release();
-    }
+    pt_element read() const { return *p; }
     pt_element ll_read() const { return *p; }
     void write(pt_element pte) {
         *const_cast<volatile u64*>(&p->x) = pte.x;
     }
-    pt_element* release() const { return p; }
 protected:
-    hw_ptep_impl(pt_element *ptep) : p(ptep) {}
-    pt_element* p;
+    hw_ptep_impl(pt_element *ptep) : hw_ptep_impl_base(ptep) {}
 };
 
 
-class hw_ptep_rcu_impl {
+class hw_ptep_rcu_impl : public hw_ptep_impl_base {
+    typedef osv::rcu_ptr<pt_element> pt_ptr;
+    inline pt_ptr* get_rcu_ptr() const {
+        return reinterpret_cast<pt_ptr*>(p);
+    }
+    inline pt_element ptr_to_pt_element(pt_element *ptr) const {
+        return pt_element(reinterpret_cast<u64>(ptr));
+    }
+    inline pt_element* pt_element_to_ptr(pt_element pte) {
+        return reinterpret_cast<pt_element*>(pte.x);
+    }
+
 public:
-    void operator=(const hw_ptep_rcu_impl& a) {
-        p.assign(a.release());
-    }
-    pt_element ll_read() const { return *p.read(); }
-    void write(pt_element pte) {
-        reinterpret_cast<osv::rcu_ptr<pt_element>*>(release())->assign(reinterpret_cast<pt_element*>(pte.x));
-    }
-    pt_element* release() const { return p.read_by_owner(); }
+    pt_element read() const { return ptr_to_pt_element(get_rcu_ptr()->read_by_owner()); }
+    pt_element ll_read() const { return ptr_to_pt_element(get_rcu_ptr()->read()); }
+    void write(pt_element pte) { get_rcu_ptr()->assign(pt_element_to_ptr(pte)); }
+
 protected:
-    hw_ptep_rcu_impl(pt_element *ptep) : p(ptep) {}
-    osv::rcu_ptr<pt_element> p;
+    hw_ptep_rcu_impl(pt_element *ptep) : hw_ptep_impl_base(ptep) {}
 };
 
 template<int N>
 using hw_ptep_base = typename boost::mpl::if_<
-                std::integral_constant<bool, (N == 1) || (N == 2)>,
+                std::integral_constant<bool, (N == 1) || (N == 2)>, // only L1 and L2 PTs are RCU protected
                 hw_ptep_rcu_impl,
                 hw_ptep_impl>::type;
 
@@ -183,22 +190,26 @@ template <int N>
 class hw_ptep : public hw_ptep_base<N> {
     BOOST_STATIC_ASSERT(N >= -1 && N <= 4);
 public:
-    hw_ptep(const hw_ptep<N>& a) : hw_ptep_base<N>(a.release()) {}
-    pt_element read() const { return *release(); }
+    hw_ptep(const hw_ptep<N>& a) : hw_ptep_base<N>(a.p) {}
+    void operator=(const hw_ptep& a) {
+        p = a.p;
+    }
     pt_element exchange(pt_element newval) {
-        std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&release()->x);
+        std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&p->x);
         return pt_element(x->exchange(newval.x));
     }
     bool compare_exchange(pt_element oldval, pt_element newval) {
-        std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&release()->x);
+        std::atomic<u64> *x = reinterpret_cast<std::atomic<u64>*>(&p->x);
         return x->compare_exchange_strong(oldval.x, newval.x, std::memory_order_relaxed);
     }
-    hw_ptep<N> at(unsigned idx) { return hw_ptep<N>(release() + idx); }
+    hw_ptep<N> at(unsigned idx) { return hw_ptep<N>(p + idx); }
     static hw_ptep<N> force(pt_element* ptep) { return hw_ptep<N>(ptep); }
-    using hw_ptep_base<N>::release;
-    bool operator==(const hw_ptep<N>& a) const noexcept { return release() == a.release(); }
+    // no longer using this as a page table
+    pt_element* release() const { return p; }
+    bool operator==(const hw_ptep<N>& a) const noexcept { return p == a.p; }
 private:
     hw_ptep(pt_element* ptep) : hw_ptep_base<N>(ptep) {}
+    using hw_ptep_base<N>::p;
 };
 
 }
