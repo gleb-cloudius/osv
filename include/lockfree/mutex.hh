@@ -57,6 +57,7 @@
 // We also can't include <osv/wait_record.hh>, as that includes <sched.hh>.
 namespace sched {
     class thread;
+    struct cpu;
 }
 struct wait_record;
 
@@ -72,6 +73,7 @@ protected:
     // it can be accessed with relaxed memory ordering.
     unsigned int depth;
     std::atomic<sched::thread *> owner;
+    std::atomic<sched::cpu *> cpu;
     queue_mpsc<wait_record> waitqueue;
     std::atomic<unsigned int> handoff;
     unsigned int sequence;
@@ -79,7 +81,7 @@ public:
     // Note: mutex's constructor just initializes the whole structure to
     // zero, and its destructor does nothing. This is useful to know when
     // allocating a mutex in C.
-    constexpr mutex() : count(0), depth(0), owner(nullptr), waitqueue(), handoff(0), sequence(0) { }
+    constexpr mutex() : count(0), depth(0), owner(nullptr), cpu(nullptr), waitqueue(), handoff(0), sequence(0) { }
     ~mutex() { /*assert(count==0);*/ }
 
     void lock();

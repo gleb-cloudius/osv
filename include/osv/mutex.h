@@ -18,7 +18,7 @@
 #define LOCKFREE_MUTEX
 
 #define LOCKFREE_MUTEX_ALIGN void*
-#define LOCKFREE_MUTEX_SIZE 40
+#define LOCKFREE_MUTEX_SIZE 48
 #ifdef __cplusplus
 /** C++ **/
 #include <lockfree/mutex.hh>

@@ -307,8 +307,8 @@ private:
  */
 class thread : private timer_base::client {
 private:
-    struct detached_state;
 public:
+    struct detached_state;
     struct stack_info {
         stack_info();
         stack_info(void* begin, size_t size);
@@ -504,9 +504,9 @@ public:
     }
 private:
     virtual void timer_fired() override;
+public:
     struct detached_state;
     friend struct detached_state;
-private:
     std::function<void ()> _func;
     thread_state _state;
     thread_control_block* _tcb;
@@ -687,6 +687,7 @@ struct cpu : private timer_base::client {
     unsigned id;
     struct arch_cpu arch;
     thread* bringup_thread;
+    thread* curr;
     runqueue_type runqueue;
     timer_list timers;
     timer_base preemption_timer;

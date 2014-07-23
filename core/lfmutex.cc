@@ -19,19 +19,21 @@ TRACEPOINT(trace_mutex_try_lock, "%p, success=%d", mutex *, bool);
 TRACEPOINT(trace_mutex_unlock, "%p", mutex *);
 TRACEPOINT(trace_mutex_send_lock, "%p, wr=%p", mutex *, wait_record *);
 TRACEPOINT(trace_mutex_receive_lock, "%p", mutex *);
+TRACEPOINT(trace_mutex_stop_spin, "%d, %p, %p", int, void*, void*);
+TRACEPOINT(trace_mutex_stole, "%d", int);
 
 void mutex::lock()
 {
     trace_mutex_lock(this);
 
     sched::thread *current = sched::thread::current();
-
     if (count.fetch_add(1, std::memory_order_acquire) == 0) {
         // Uncontended case (no other thread is holding the lock, and no
         // concurrent lock() attempts). We got the lock.
         // Setting count=1 already got us the lock; we set owner and depth
         // just for implementing a recursive mutex.
         owner.store(current, std::memory_order_relaxed);
+        cpu.store(current ? current->get_cpu() : nullptr, std::memory_order_relaxed);
         depth = 1;
         return;
     }
@@ -45,6 +47,30 @@ void mutex::lock()
         return;
     }
 
+#if 1
+    auto old = owner.load(std::memory_order_relaxed);
+    for (int c = 0; c<100000; c++) {
+	auto o = owner.load(std::memory_order_relaxed);
+//	auto p = cpu.load(std::memory_order_relaxed);
+        if (old != o || (o && o->_detached_state.get()->st.load(std::memory_order_relaxed) != sched::thread::status::running))  {
+ //       if (p && o && o != p->curr) {
+                //trace_mutex_stop_spin(c, o, p->curr);
+                trace_mutex_stop_spin(c, o, nullptr);
+		break;
+        }
+
+        auto h = handoff.load(std::memory_order_relaxed);
+	if (h) {
+          if (handoff.compare_exchange_strong(h, 0U)) {
+                    owner.store(current, std::memory_order_relaxed);
+                    cpu.store(current ? current->get_cpu() : nullptr, std::memory_order_relaxed);
+                    depth = 1;
+                    trace_mutex_stole(c);
+                    return;
+          }
+        }
+    }
+#endif
     // If we're here still here the lock is owned by a different thread.
     // Put this thread in a waiting queue, so it will eventually be woken
     // when another thread releases the lock.
@@ -76,6 +102,7 @@ void mutex::lock()
                     // got the lock ourselves
                     assert(other == &waiter);
                     owner.store(current, std::memory_order_relaxed);
+                    cpu.store(current ? current->get_cpu() : nullptr, std::memory_order_relaxed);
                     depth = 1;
                     return;
                 }

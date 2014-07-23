@@ -321,6 +321,7 @@ void cpu::reschedule_from_interrupt()
             preemption_timer.set(now + delta);
         }
     }
+    curr = n;
     n->switch_to();
     if (p->_detached_state->_cpu->terminating_thread) {
         p->_detached_state->_cpu->terminating_thread->destroy();
