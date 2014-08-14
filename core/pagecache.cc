@@ -425,51 +425,55 @@ bool get(vfs_file* fp, off_t offset, mmu::hw_ptep<0> ptep, mmu::pt_element<0> pt
     struct stat st;
     fp->stat(&st);
     hashkey key {st.st_dev, st.st_ino, offset};
-    SCOPE_LOCK(write_lock);
-    cached_page_write* wcp = find_in_cache(write_cache, key);
 
-    if (write) {
-        if (!wcp) {
-            auto newcp = create_write_cached_page(fp, key);
-            if (shared) {
-                // write fault into shared mapping, there page is not in write cache yet, add it.
-                wcp = newcp.release();
-                insert(wcp);
-                // page is moved from ARC to write cache
-                // drop ARC page if exists, removing all mappings
-                drop_read_cached_page(key);
-            } else {
-                // remove mapping to ARC page if exists
-                remove_read_mapping(key, ptep);
-                // cow of private page from ARC
-                return mmu::write_pte(newcp->release(), ptep, pte);
-            }
-        } else if (!shared) {
-            // cow of private page from write cache
-            void* page = memory::alloc_page();
-            memcpy(page, wcp->addr(), mmu::page_size);
-            return mmu::write_pte(page, ptep, pte);
-        }
-    } else if (!wcp) {
-        // read fault and page is not in write cache yet, return one from ARC, mark it cow
-        do {
-            WITH_LOCK(arc_lock) {
-                cached_page_arc* cp = find_in_cache(read_cache, key);
-                if (cp) {
-                    add_read_mapping(cp, ptep);
-                    return mmu::write_pte(cp->addr(), ptep, mmu::pte_mark_cow(pte, true));
+    WITH_LOCK(write_lock) {
+        cached_page_write* wcp = find_in_cache(write_cache, key);
+
+        if (write) {
+            if (!wcp) {
+                auto newcp = create_write_cached_page(fp, key);
+                if (shared) {
+                    // write fault into shared mapping, there page is not in write cache yet, add it.
+                    wcp = newcp.release();
+                    insert(wcp);
+                    // page is moved from ARC to write cache
+                    // drop ARC page if exists, removing all mappings
+                    drop_read_cached_page(key);
+                } else {
+                    // remove mapping to ARC page if exists
+                    remove_read_mapping(key, ptep);
+                    // cow of private page from ARC
+                    return mmu::write_pte(newcp->release(), ptep, pte);
                 }
+            } else if (!shared) {
+                // cow of private page from write cache
+                void* page = memory::alloc_page();
+                memcpy(page, wcp->addr(), mmu::page_size);
+                return mmu::write_pte(page, ptep, pte);
             }
-            // page is not in cache yet, create and try again
-        } while (create_read_cached_page(fp, key) != -1);
+        }
 
-        // try to access a hole in a file, map by zero_page
-        return mmu::write_pte(zero_page, ptep, mmu::pte_mark_cow(pte, true));
+        if (wcp) {
+            wcp->map(ptep);
+
+            return mmu::write_pte(wcp->addr(), ptep, mmu::pte_mark_cow(pte, !shared));
+        }
     }
 
-    wcp->map(ptep);
+    // read fault and page is not in write cache yet, return one from ARC, mark it cow
+    do {
+        WITH_LOCK(arc_lock) {
+            cached_page_arc* cp = find_in_cache(read_cache, key);
+            if (cp) {
+                add_read_mapping(cp, ptep);
+                return mmu::write_pte(cp->addr(), ptep, mmu::pte_mark_cow(pte, true));
+            }
+        }
+        // page is not in cache yet, create and try again
+    } while (create_read_cached_page(fp, key) != -1);
 
-    return mmu::write_pte(wcp->addr(), ptep, mmu::pte_mark_cow(pte, !shared));
+    // try to access a hole in a file, map by zero_page
+    return mmu::write_pte(zero_page, ptep, mmu::pte_mark_cow(pte, true));
 }
 
 bool release(vfs_file* fp, void *addr, off_t offset, mmu::hw_ptep<0> ptep)
