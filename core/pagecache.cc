@@ -17,6 +17,7 @@
 #include <osv/trace.hh>
 #include <osv/prio.hh>
 #include <chrono>
+#include <osv/rwlock.h>
 
 extern "C" {
 void arc_unshare_buf(arc_buf_t*);
@@ -297,7 +298,7 @@ std::unordered_multimap<arc_buf_t*, cached_page_arc*> cached_page_arc::arc_cache
 static std::unordered_map<hashkey, cached_page_arc*> read_cache;
 static std::unordered_map<hashkey, cached_page_write*> write_cache;
 static std::deque<cached_page_write*> write_lru;
-static mutex arc_lock; // protects against parallel access to the read cache
+static rwlock_t arc_lock; // protects against parallel access to the read cache
 static mutex write_lock; // protect against parallel access to the write cache
 
 template<typename T>
@@ -331,7 +332,7 @@ void remove_read_mapping(cached_page_arc* cp, mmu::hw_ptep<0> ptep)
 
 void remove_read_mapping(hashkey& key, mmu::hw_ptep<0> ptep)
 {
-    SCOPE_LOCK(arc_lock);
+    SCOPE_LOCK(arc_lock.for_write());
     cached_page_arc* cp = find_in_cache(read_cache, key);
     if (cp) {
         remove_read_mapping(cp, ptep);
@@ -356,7 +357,7 @@ unsigned drop_read_cached_page(cached_page_arc* cp, bool flush)
 
 void drop_read_cached_page(hashkey& key)
 {
-    SCOPE_LOCK(arc_lock);
+    SCOPE_LOCK(arc_lock.for_write());
     cached_page_arc* cp = find_in_cache(read_cache, key);
     if (cp) {
         drop_read_cached_page(cp, true);
@@ -367,7 +368,7 @@ TRACEPOINT(trace_unmap_arc_buf, "buf=%p", void*);
 void unmap_arc_buf(arc_buf_t* ab)
 {
     trace_unmap_arc_buf(ab);
-    SCOPE_LOCK(arc_lock);
+    SCOPE_LOCK(arc_lock.for_write());
     cached_page_arc::unmap_arc_buf(ab);
 }
 
@@ -375,7 +376,7 @@ TRACEPOINT(trace_map_arc_buf, "buf=%p page=%p", void*, void*);
 void map_arc_buf(hashkey *key, arc_buf_t* ab, void *page)
 {
     trace_map_arc_buf(ab, page);
-    SCOPE_LOCK(arc_lock);
+    SCOPE_LOCK(arc_lock.for_write());
     cached_page_arc* pc = new cached_page_arc(*key, page, ab);
     read_cache.emplace(*key, pc);
     arc_share_buf(ab);
@@ -462,7 +463,7 @@ bool get(vfs_file* fp, off_t offset, mmu::hw_ptep<0> ptep, mmu::pt_element<0> pt
 
     // read fault and page is not in write cache yet, return one from ARC, mark it cow
     do {
-        WITH_LOCK(arc_lock) {
+        WITH_LOCK(arc_lock.for_read()) {
             cached_page_arc* cp = find_in_cache(read_cache, key);
             if (cp) {
                 add_read_mapping(cp, ptep);
@@ -500,7 +501,7 @@ bool release(vfs_file* fp, void *addr, off_t offset, mmu::hw_ptep<0> ptep)
         }
     }
 
-    WITH_LOCK(arc_lock) {
+    WITH_LOCK(arc_lock.for_write()) {
         cached_page_arc* rcp = find_in_cache(read_cache, key);
         if (rcp && mmu::virt_to_phys(rcp->addr()) == old.addr()) {
             // page is in ARC
@@ -582,7 +583,7 @@ private:
             auto start = sched::thread::current()->thread_clock();
             auto deadline = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::nanoseconds(static_cast<unsigned long>(work/_freq))) + start;
 
-            WITH_LOCK(arc_lock) {
+            WITH_LOCK(arc_lock.for_read()) {
                 while (sched::thread::current()->thread_clock() < deadline && buckets_scanned < bucket_count) {
                     if (current_bucket >= cached_page_arc::arc_cache_map.bucket_count()) {
                         current_bucket = 0;
@@ -604,7 +605,7 @@ private:
 
                     // mark ARC buffers as accessed when we have 1024 of them
                     if (!(cleared % 1024)) {
-                        DROP_LOCK(arc_lock) {
+                        DROP_LOCK(arc_lock.for_read()) {
                             flush = mark_accessed(accessed);
                         }
                     }
