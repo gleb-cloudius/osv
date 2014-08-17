@@ -37,7 +37,7 @@ int main(int argc, char **argv)
     assert(sysinfo(&sinfo) == 0);
     std::cout << "Total Ram " << (sinfo.totalram >> 20) << " Mb\n";
     unsigned long pages = sinfo.totalram / PAGE_SIZE;
-    unsigned long mapsize = pages * 0.7;//663;
+    unsigned long mapsize = pages * 0.3;//663;
     rnd_seq seq(mapsize);
     std::vector<unsigned> incore(mapsize);
     std::vector<unsigned> hit(mapsize);
@@ -58,7 +58,7 @@ int main(int argc, char **argv)
                 boost::make_function_input_iterator(seq, mapsize * 1000),
                 [&](int i) {
             unsigned char c = 0;
-            mincore((void*)&mem[i*PAGE_SIZE], PAGE_SIZE, &c);
+//            mincore((void*)&mem[i*PAGE_SIZE], PAGE_SIZE, &c);
             total++;
             auto a __attribute__ ((unused)) = mem[i*PAGE_SIZE];
             hit[i]++;
