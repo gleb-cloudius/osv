@@ -541,6 +541,7 @@ void sync(vfs_file* fp, off_t start, off_t end)
     }
 }
 
+#if 0
 TRACEPOINT(trace_access_scanner, "scanned=%u, cleared=%u, %%cpu=%g", unsigned, unsigned, double);
 static class access_scanner {
     static constexpr double _max_cpu = 20;
@@ -637,5 +638,5 @@ private:
 constexpr double access_scanner::_max_cpu;
 constexpr double access_scanner::_min_cpu;
 
-
+#endif
 }
