@@ -427,7 +427,7 @@ bool get(vfs_file* fp, off_t offset, mmu::hw_ptep<0> ptep, mmu::pt_element<0> pt
     fp->stat(&st);
     hashkey key {st.st_dev, st.st_ino, offset};
 
-    WITH_LOCK(write_lock) {
+//    WITH_LOCK(write_lock) {
         cached_page_write* wcp = find_in_cache(write_cache, key);
 
         if (write) {
@@ -459,7 +459,7 @@ bool get(vfs_file* fp, off_t offset, mmu::hw_ptep<0> ptep, mmu::pt_element<0> pt
 
             return mmu::write_pte(wcp->addr(), ptep, mmu::pte_mark_cow(pte, !shared));
         }
-    }
+    //}
 
     // read fault and page is not in write cache yet, return one from ARC, mark it cow
     do {
