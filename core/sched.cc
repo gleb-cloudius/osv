@@ -355,12 +355,18 @@ void cpu::idle_poll_end()
     std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
+TRACEPOINT(trace_send_wakeup_ipi_sent, "");
+TRACEPOINT(trace_send_wakeup_ipi_skip, "");
+
 void cpu::send_wakeup_ipi()
 {
 #ifndef AARCH64_PORT_STUB
     std::atomic_thread_fence(std::memory_order_seq_cst);
     if (!idle_poll.load(std::memory_order_relaxed)) {
         wakeup_ipi.send(this);
+        trace_send_wakeup_ipi_sent();
+    } else {
+        trace_send_wakeup_ipi_skip();
     }
 #endif /* !AARCH64_PORT_STUB */
 }
