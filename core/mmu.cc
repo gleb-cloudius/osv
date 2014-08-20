@@ -1116,6 +1116,9 @@ std::unique_ptr<file_vma> map_file_mmap(file* file, addr_range range, unsigned f
 void* map_file(const void* addr, size_t size, unsigned flags, unsigned perm,
               fileref f, f_offset offset)
 {
+    if (memcmp(f->f_dentry->d_path, "/var", 4) == 0) {
+           flags |= mmap_populate;
+    }
     bool search = !(flags & mmu::mmap_fixed);
     size = align_up(size, mmu::page_size);
     auto start = reinterpret_cast<uintptr_t>(addr);
