@@ -416,6 +416,7 @@ void net::receiver()
 {
     vring* vq = _rxq.vqueue;
     std::vector<iovec> packet;
+    sched::thread::current()->set_priority(0.1);
 
     while (1) {
 

@@ -359,7 +359,7 @@ void cpu::send_wakeup_ipi()
 {
 #ifndef AARCH64_PORT_STUB
     std::atomic_thread_fence(std::memory_order_seq_cst);
-    if (!idle_poll.load(std::memory_order_relaxed)) {
+    if (!idle_poll.load(std::memory_order_relaxed) && runqueue.empty()) {
         wakeup_ipi.send(this);
     }
 #endif /* !AARCH64_PORT_STUB */
